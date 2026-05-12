@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * /notebooks/new — dedicated create flow page.
+ * /notebooks/new — dedicated import flow page.
  *
- * UPDATED in Phase E: wired ZIP import option (was "Soon" placeholder).
+ * UPDATED in Stage 1 (DnD migration):
+ *   - REMOVED: "Start from scratch" card (redundant — already in /notebooks dashboard)
+ *   - REMOVED: "Import from ZIP" file-picker card
+ *   - ADDED: UnifiedDropzone — drag-and-drop area accepting both .zip and .md files
  *
- * Two entry options:
- *   1. Create blank notebook (opens NewNotebookModal from Phase B)
- *   2. Import from ZIP (opens preview modal, creates notebook on confirm)
+ * Flow:
+ *   - User drops .zip   → parseZipFile → ImportPreviewModal (mode: new)
+ *   - User drops N .md  → MdNotebookModal (confirm name) → importMarkdownFilesAsNewNotebook
+ *
+ * The dropzone also functions as a file picker on click — react-dropzone
+ * handles both interactions natively.
  */
 
 import { useRouter } from "next/navigation";
@@ -15,55 +21,69 @@ import Link from "next/link";
 import { useState } from "react";
 import {
   ArrowLeft,
-  Plus,
-  Upload,
   BookOpen,
-  Sparkles,
-  FolderArchive,
+  Lightbulb,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
-import { NewNotebookModal } from "@/components/features/notebook/notebooks";
 import {
-  ImportZipButton,
+  UnifiedDropzone,
+  MdNotebookModal,
   ImportPreviewModal,
 } from "@/components/features/notebook/import";
+import {
+  parseZipFile,
+  getZipErrorMessage,
+  type ParsedZip,
+} from "@/lib/notebook/import/zip-parser";
 import {
   importZipAsNewNotebook,
   type ImportProgress,
 } from "@/lib/notebook/import/importer";
-import type { ParsedZip } from "@/lib/notebook/import/zip-parser";
 import { ROUTES } from "@/constants";
-import { cn } from "@/lib/utils";
 
 export default function NewNotebookPage() {
   const router = useRouter();
 
-  // Blank-notebook modal (from Phase B)
-  const [showCreateModal, setShowCreateModal] = useState(false);
-
-  // ZIP import state
+  // ── ZIP flow state ──────────────────────────────────────
   const [parsedZip, setParsedZip] = useState<ParsedZip | null>(null);
-  const [importProgress, setImportProgress] = useState<ImportProgress | null>(
-    null
-  );
-  const [isImporting, setIsImporting] = useState(false);
+  const [zipImportProgress, setZipImportProgress] =
+    useState<ImportProgress | null>(null);
+  const [isZipImporting, setIsZipImporting] = useState(false);
+  const [isParsingZip, setIsParsingZip] = useState(false);
 
-  // ─── Handle ZIP parsed: open preview modal ───
-  const handleZipParsed = (parsed: ParsedZip) => {
-    setParsedZip(parsed);
-    setImportProgress(null);
+  // ── MD flow state ───────────────────────────────────────
+  const [mdFiles, setMdFiles] = useState<File[] | null>(null);
+
+  const isProcessing = isParsingZip || isZipImporting || mdFiles !== null;
+
+  // ════════════════════════════════════════════════════════
+  // ZIP HANDLERS
+  // ════════════════════════════════════════════════════════
+
+  const handleZipDropped = async (file: File) => {
+    setIsParsingZip(true);
+    try {
+      const result = await parseZipFile(file);
+      if (!result.ok) {
+        toast.error(getZipErrorMessage(result.error));
+        return;
+      }
+      setParsedZip(result.data);
+    } catch (err) {
+      console.error("[NewNotebookPage] zip parse error:", err);
+      toast.error("Failed to read ZIP file");
+    } finally {
+      setIsParsingZip(false);
+    }
   };
 
-  // ─── Handle import confirm ───
-  const handleImportConfirm = async (options: {
+  const handleZipImportConfirm = async (options: {
     notebookName?: string;
     notebookIcon?: string;
   }) => {
     if (!parsedZip || !options.notebookName) return;
 
-    setIsImporting(true);
+    setIsZipImporting(true);
     try {
       const result = await importZipAsNewNotebook(
         parsedZip,
@@ -71,7 +91,7 @@ export default function NewNotebookPage() {
           notebookName: options.notebookName,
           notebookIcon: options.notebookIcon ?? null,
         },
-        (progress) => setImportProgress(progress)
+        (progress) => setZipImportProgress(progress)
       );
 
       toast.success(
@@ -80,19 +100,34 @@ export default function NewNotebookPage() {
         } into "${options.notebookName}"`
       );
 
-      // Close modal + navigate
       setParsedZip(null);
-      setImportProgress(null);
+      setZipImportProgress(null);
       router.push(ROUTES.NOTEBOOK_DETAIL(result.notebookId));
     } catch (err) {
-      console.error("[NewNotebookPage] import error:", err);
+      console.error("[NewNotebookPage] zip import error:", err);
       toast.error("Failed to import — please try again");
     } finally {
-      setIsImporting(false);
+      setIsZipImporting(false);
     }
   };
 
-  // ─── Render ───
+  // ════════════════════════════════════════════════════════
+  // MD HANDLERS
+  // ════════════════════════════════════════════════════════
+
+  const handleMarkdownDropped = (files: File[]) => {
+    setMdFiles(files);
+  };
+
+  const handleMdModalClose = (open: boolean) => {
+    if (!open) {
+      setMdFiles(null);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════
+  // RENDER
+  // ════════════════════════════════════════════════════════
 
   return (
     <>
@@ -112,112 +147,101 @@ export default function NewNotebookPage() {
             <BookOpen className="h-7 w-7 text-primary" />
           </div>
           <h1 className="text-3xl font-bold tracking-tight">
-            Create a new notebook
+            Import to a new notebook
           </h1>
           <p className="text-muted-foreground max-w-md mx-auto">
-            Start from scratch or import an existing folder of markdown files.
+            Drop a ZIP archive or markdown files. Folder structure becomes
+            sections automatically.
           </p>
         </div>
 
-        {/* Options grid */}
-        <div className="grid sm:grid-cols-2 gap-4">
-          {/* Option 1: Blank */}
-          <button
-            type="button"
-            onClick={() => setShowCreateModal(true)}
-            className="text-left"
-          >
-            <Card
-              className={cn(
-                "h-full transition-all hover:shadow-md hover:border-primary/40 cursor-pointer",
-                "group"
-              )}
-            >
-              <CardContent className="pt-6 space-y-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <Sparkles className="h-5 w-5 text-blue-600" />
-                </div>
-                <div>
-                  <h3 className="font-semibold">Start from scratch</h3>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Create an empty notebook and start writing. Add sections
-                    and pages as you go.
-                  </p>
-                </div>
-                <div className="inline-flex items-center gap-1.5 text-sm text-primary font-medium">
-                  <Plus className="h-3.5 w-3.5" />
-                  Create blank notebook
-                </div>
-              </CardContent>
-            </Card>
-          </button>
+        {/* The dropzone — main interaction */}
+        <UnifiedDropzone
+          onZipDropped={handleZipDropped}
+          onMarkdownFilesDropped={handleMarkdownDropped}
+          isProcessing={isProcessing}
+        />
 
-          {/* Option 2: Import from ZIP — NOW WIRED */}
-          <Card className="h-full hover:shadow-md hover:border-primary/40 transition-all group">
-            <CardContent className="pt-6 space-y-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center group-hover:scale-110 transition-transform">
-                <FolderArchive className="h-5 w-5 text-amber-600" />
-              </div>
-              <div>
-                <h3 className="font-semibold">Import from ZIP</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Upload a folder of{" "}
-                  <code className="text-[11px] bg-muted px-1 rounded">
-                    .md
-                  </code>{" "}
-                  files — sections and pages auto-detected from the folder
-                  structure.
-                </p>
-              </div>
-              <ImportZipButton
-                onParsed={handleZipParsed}
-                variant="default"
-                size="sm"
-                label="Choose ZIP file"
-                className="w-full"
-              />
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Tip */}
-        <div className="rounded-lg bg-muted/50 border p-4 text-sm">
-          <p className="font-medium mb-1">💡 Folder structure tip</p>
-          <p className="text-muted-foreground">
-            Use{" "}
-            <code className="text-xs bg-background px-1 rounded">
-              01-intro
-            </code>
-            ,{" "}
-            <code className="text-xs bg-background px-1 rounded">
-              02-guides
-            </code>{" "}
-            prefixes for ordering. Each subfolder becomes a section, each{" "}
-            <code className="text-xs bg-background px-1 rounded">.md</code>{" "}
-            file becomes a page.
-          </p>
+        {/* Tips section */}
+        <div className="rounded-xl border bg-muted/30 p-5">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-950/40 flex items-center justify-center flex-shrink-0">
+              <Lightbulb className="h-4 w-4 text-amber-600 dark:text-amber-500" />
+            </div>
+            <div className="space-y-2 text-sm">
+              <p className="font-medium">Folder structure tips</p>
+              <ul className="space-y-1.5 text-muted-foreground text-xs leading-relaxed">
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground/60">→</span>
+                  <span>
+                    Use{" "}
+                    <code className="text-[11px] bg-background px-1.5 py-0.5 rounded font-mono">
+                      01-intro
+                    </code>
+                    ,{" "}
+                    <code className="text-[11px] bg-background px-1.5 py-0.5 rounded font-mono">
+                      02-guides
+                    </code>{" "}
+                    prefixes for ordering
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground/60">→</span>
+                  <span>
+                    Each subfolder becomes a section, each{" "}
+                    <code className="text-[11px] bg-background px-1.5 py-0.5 rounded font-mono">
+                      .md
+                    </code>{" "}
+                    file becomes a page
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground/60">→</span>
+                  <span>
+                    YAML frontmatter (
+                    <code className="text-[11px] bg-background px-1.5 py-0.5 rounded font-mono">
+                      title:
+                    </code>
+                    ) is preserved for page metadata
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-muted-foreground/60">→</span>
+                  <span>
+                    Multiple loose{" "}
+                    <code className="text-[11px] bg-background px-1.5 py-0.5 rounded font-mono">
+                      .md
+                    </code>{" "}
+                    files work too — they become flat pages
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Blank-notebook modal */}
-      <NewNotebookModal
-        open={showCreateModal}
-        onOpenChange={setShowCreateModal}
-        onCreated={(id) => router.push(ROUTES.NOTEBOOK_DETAIL(id))}
-      />
-
-      {/* ZIP import preview modal */}
+      {/* ZIP preview + import modal */}
       {parsedZip && (
         <ImportPreviewModal
           open={!!parsedZip}
           onOpenChange={(open) => {
-            if (!open && !isImporting) setParsedZip(null);
+            if (!open && !isZipImporting) setParsedZip(null);
           }}
           parsed={parsedZip}
           mode={{ kind: "new" }}
-          progress={importProgress}
-          isImporting={isImporting}
-          onConfirm={handleImportConfirm}
+          progress={zipImportProgress}
+          isImporting={isZipImporting}
+          onConfirm={handleZipImportConfirm}
+        />
+      )}
+
+      {/* MD confirm + import modal */}
+      {mdFiles && (
+        <MdNotebookModal
+          open={mdFiles !== null}
+          onOpenChange={handleMdModalClose}
+          files={mdFiles}
         />
       )}
     </>

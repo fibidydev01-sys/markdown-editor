@@ -1,18 +1,32 @@
 "use client";
 
 /**
- * Page list item — a row in the notebook sidebar tree.
+ * Page list item — Notion-style EAGER SWAP edition.
  *
- * Features:
- *   - Click → select page (navigate via parent callback)
- *   - Multi-select via checkbox (shift/cmd click handled by parent)
- *   - Inline rename (double-click or via context menu)
- *   - Context menu: rename, duplicate, move, delete
- *   - Drag handle for HTML5 drag/drop
- *   - Active highlight when current page
+ * ──────────────────────────────────────────────────────────────────
+ * WHAT CHANGED (Stage 2 polish):
+ * ──────────────────────────────────────────────────────────────────
+ * BEFORE: rendered <DropIndicator> based on position classification
+ *         (before/after). User had to be presisi.
+ *
+ * NOW:    No drop indicator. The item itself ANIMATES into the new
+ *         position as soon as the cursor reaches it. This is the
+ *         Notion / Linear / Trello pattern.
+ *
+ * dnd-kit's `useSortable` returns a `transform` that includes the
+ * computed translate to make space for the incoming item. As soon as
+ * the parent's optimistic state updates (which `useSortable` reads
+ * from `SortableContext`'s items array), the list rearranges with a
+ * smooth CSS transition.
+ *
+ * The visual cue is the gap that opens up + the dragged item's
+ * overlay following the cursor. No line, no indicator, no precision
+ * targeting needed.
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   FileText,
   MoreVertical,
@@ -21,6 +35,7 @@ import {
   Trash2,
   FolderInput,
   Check,
+  GripVertical,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -48,21 +63,13 @@ import { cn } from "@/lib/utils";
 
 interface PageListItemProps {
   page: NotebookPage;
-  /** All sections in the notebook (for "Move to..." menu). */
   sections: NotebookSection[];
-  /** Is this the currently-active page? */
   isActive: boolean;
-  /** Is this page selected (multi-select)? */
   isSelected: boolean;
-  /** Indentation depth based on section nesting (px). */
-  depth: number;
-  /** Click — parent decides whether to open or toggle select. */
-  onClick: (page: NotebookPage, event: React.MouseEvent) => void;
-  /** Checkbox click — explicit toggle select. */
-  onToggleSelect: (id: string, event: React.MouseEvent) => void;
-  /** Multi-select active anywhere in the notebook. */
   selectionActive: boolean;
-  /** Action handlers — parent owns storage calls. */
+  depth: number;
+  onClick: (page: NotebookPage, event: React.MouseEvent) => void;
+  onToggleSelect: (id: string, event: React.MouseEvent) => void;
   onRename: (id: string, newTitle: string) => void | Promise<void>;
   onDuplicate: (id: string) => void | Promise<void>;
   onMove: (id: string, sectionId: string | null) => void | Promise<void>;
@@ -74,10 +81,10 @@ export function PageListItem({
   sections,
   isActive,
   isSelected,
+  selectionActive,
   depth,
   onClick,
   onToggleSelect,
-  selectionActive,
   onRename,
   onDuplicate,
   onMove,
@@ -88,7 +95,22 @@ export function PageListItem({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input when renaming starts
+  // ── dnd-kit sortable ──
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: page.id,
+    data: { kind: "page" },
+    disabled: isRenaming,
+  });
+
+  // Focus rename input
   useEffect(() => {
     if (isRenaming) {
       inputRef.current?.focus();
@@ -96,8 +118,7 @@ export function PageListItem({
     }
   }, [isRenaming]);
 
-  // Reset rename value when page title changes externally
-  // (but NOT while user is actively renaming — don't clobber their input)
+  // Sync external title changes
   useEffect(() => {
     if (!isRenaming) {
       setRenameValue(page.title);
@@ -119,31 +140,19 @@ export function PageListItem({
     setIsRenaming(false);
   };
 
-  // ── Drag start ────────────────────────────────────────
-  const handleDragStart = (e: React.DragEvent) => {
-    if (isRenaming) {
-      e.preventDefault();
-      return;
-    }
-    // If part of multi-select, drag all selected
-    if (isSelected) {
-      e.dataTransfer.setData(
-        "application/notebook-page-ids",
-        JSON.stringify([page.id])
-      );
-    } else {
-      e.dataTransfer.setData("application/notebook-page-id", page.id);
-    }
-    e.dataTransfer.effectAllowed = "move";
+  // Apply dnd transform — smooth motion handled by dnd-kit's transition
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    paddingLeft: `${depth * 12 + 8}px`,
   };
-
-  // ── Render ────────────────────────────────────────────
 
   return (
     <>
       <div
-        draggable={!isRenaming}
-        onDragStart={handleDragStart}
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
         onClick={(e) => {
           if (isRenaming) return;
           onClick(page, e);
@@ -156,14 +165,34 @@ export function PageListItem({
           isActive
             ? "bg-primary/10 text-primary font-medium"
             : isSelected
-            ? "bg-accent/60"
-            : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              ? "bg-accent/60"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          // Hide source during drag — overlay represents it.
+          // We keep the slot (opacity instead of display:none) so
+          // surrounding items don't jump.
+          isDragging && "opacity-30"
         )}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
         role="treeitem"
         aria-selected={isSelected}
       >
-        {/* Checkbox (only shown when selection active or hovered) */}
+        {/* Drag handle */}
+        <button
+          ref={setActivatorNodeRef}
+          {...listeners}
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "flex h-5 w-3 items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing",
+            "opacity-0 group-hover:opacity-100 transition-opacity",
+            isRenaming && "pointer-events-none opacity-0"
+          )}
+          aria-label="Drag to reorder"
+          tabIndex={-1}
+        >
+          <GripVertical className="h-3 w-3 text-muted-foreground" />
+        </button>
+
+        {/* Checkbox */}
         <button
           type="button"
           onClick={(e) => {

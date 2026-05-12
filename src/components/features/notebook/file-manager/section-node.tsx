@@ -1,28 +1,42 @@
 "use client";
 
 /**
- * Section node — a row in the notebook sidebar tree.
+ * Section node — Notion-style EAGER SWAP edition.
  *
- * Features:
- *   - Collapsible — click chevron or section row to expand/collapse
- *   - Inline rename
- *   - Context menu: rename, new page/section inside, delete
- *   - Drag handle for HTML5 drag/drop
- *   - Drop target for pages (move into) and sections (nest under)
- *   - Recursive — renders child sections and pages
+ * ──────────────────────────────────────────────────────────────────
+ * WHAT CHANGED (Stage 2 polish):
+ * ──────────────────────────────────────────────────────────────────
+ * BEFORE: DropIndicator before/after + "inside" ring based on
+ *         pointer Y position (30/40/30 split).
+ *
+ * NOW:    No indicators. Just smooth transform via useSortable. The
+ *         section animates to its new position as soon as cursor
+ *         crosses it.
+ *
+ * Section nesting (becoming a child of another section):
+ *   - When you hover over a section for 600ms+, it auto-expands.
+ *   - Once expanded, dropping inside the expanded body adds the item
+ *     as a child of that section.
+ *   - This auto-expand is triggered by the parent dnd-context via
+ *     `expandRequest` prop here.
+ *
+ * No more "inside" position classification — the act of hovering long
+ * enough to trigger expansion IS the nesting gesture.
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   ChevronRight,
   Folder,
   FolderOpen,
   MoreVertical,
   Pencil,
-  Plus,
   Trash2,
   FileText,
   FolderPlus,
+  GripVertical,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -53,22 +67,19 @@ import type {
 } from "@/types/notebook";
 import { cn } from "@/lib/utils";
 import { PageListItem } from "./page-list-item";
+import { useDndState } from "./dnd-context";
 
 interface SectionNodeProps {
   section: NotebookSection;
-  /** All sections in the notebook (for recursion). */
   allSections: NotebookSection[];
-  /** All pages in the notebook (for finding children). */
   allPages: NotebookPage[];
-  /** Active page id (for highlight). */
   activePageId: string | null;
-  /** Multi-select state. */
   selectedPageIds: string[];
   selectedSectionIds: string[];
   selectionActive: boolean;
-  /** Nesting depth in px. */
   depth: number;
-  /** Callbacks (parent owns storage operations). */
+  /** Trigger from dnd-context: this section should auto-expand. */
+  expandRequest?: string | null;
   onSelectPage: (page: NotebookPage, event: React.MouseEvent) => void;
   onTogglePageSelect: (id: string, event: React.MouseEvent) => void;
   onRenamePage: (id: string, newTitle: string) => void | Promise<void>;
@@ -82,10 +93,6 @@ interface SectionNodeProps {
   ) => void | Promise<void>;
   onCreatePage: (sectionId: string | null) => void | Promise<void>;
   onCreateSection: (parentId: string | null) => void | Promise<void>;
-  onDropPagesIntoSection: (
-    pageIds: string[],
-    sectionId: string | null
-  ) => void | Promise<void>;
 }
 
 export function SectionNode(props: SectionNodeProps) {
@@ -98,6 +105,7 @@ export function SectionNode(props: SectionNodeProps) {
     selectedSectionIds,
     selectionActive,
     depth,
+    expandRequest,
     onSelectPage,
     onTogglePageSelect,
     onRenamePage,
@@ -108,10 +116,9 @@ export function SectionNode(props: SectionNodeProps) {
     onDeleteSection,
     onCreatePage,
     onCreateSection,
-    onDropPagesIntoSection,
   } = props;
 
-  // Children of this section
+  // Children
   const childSections = allSections
     .filter((s) => s.parentId === section.id)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -130,18 +137,45 @@ export function SectionNode(props: SectionNodeProps) {
   const [deletePageStrategy, setDeletePageStrategy] = useState<
     "orphan" | "delete"
   >("orphan");
-  const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── dnd-kit sortable ──
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: section.id,
+    data: { kind: "section" },
+    disabled: isRenaming,
+  });
+
+  // ── Shared dnd state — for "drag over me" visual ──
+  const { activeItem, overId } = useDndState();
+  const isOver = overId === section.id;
+  const isDifferentItem = isOver && activeItem && activeItem.id !== section.id;
 
   const isSelected = selectedSectionIds.includes(section.id);
 
-  // Count of pages that would be affected by delete
+  // Count pages affected by delete
   const affectedPageCount = countDescendantPages(
     section.id,
     allSections,
     allPages
   );
 
+  // ── Auto-expand on hover (from dnd-context) ──
+  useEffect(() => {
+    if (expandRequest === section.id && !isExpanded) {
+      setIsExpanded(true);
+    }
+  }, [expandRequest, section.id, isExpanded]);
+
+  // Focus rename input
   useEffect(() => {
     if (isRenaming) {
       inputRef.current?.focus();
@@ -170,86 +204,52 @@ export function SectionNode(props: SectionNodeProps) {
     setIsRenaming(false);
   };
 
-  // ── Drag handlers ───────────────────────────────────
-
-  const handleDragStart = (e: React.DragEvent) => {
-    if (isRenaming) {
-      e.preventDefault();
-      return;
-    }
-    e.dataTransfer.setData("application/notebook-section-id", section.id);
-    e.dataTransfer.effectAllowed = "move";
-    e.stopPropagation();
+  // Apply dnd transform
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    paddingLeft: `${depth * 12 + 4}px`,
   };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    const types = e.dataTransfer.types;
-    if (
-      types.includes("application/notebook-page-id") ||
-      types.includes("application/notebook-page-ids")
-    ) {
-      e.preventDefault();
-      e.stopPropagation();
-      e.dataTransfer.dropEffect = "move";
-      setIsDragOver(true);
-    }
-  };
-
-  const handleDragLeave = () => setIsDragOver(false);
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-
-    // Multi-page drop
-    const idsJson = e.dataTransfer.getData("application/notebook-page-ids");
-    if (idsJson) {
-      try {
-        const ids = JSON.parse(idsJson) as string[];
-        if (ids.length > 0) {
-          onDropPagesIntoSection(ids, section.id);
-        }
-      } catch {
-        /* ignore malformed */
-      }
-      return;
-    }
-
-    // Single-page drop
-    const id = e.dataTransfer.getData("application/notebook-page-id");
-    if (id) {
-      onDropPagesIntoSection([id], section.id);
-    }
-  };
-
-  // ── Render ──────────────────────────────────────────
 
   return (
     <>
       {/* Section row */}
       <div
-        draggable={!isRenaming}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
+        data-section-id={section.id}
         onClick={() => {
           if (!isRenaming) setIsExpanded((v) => !v);
         }}
         className={cn(
-          "group relative flex items-center gap-1 rounded-md py-1 pr-1 text-sm cursor-pointer transition-colors",
-          isDragOver
-            ? "bg-primary/15 ring-1 ring-primary"
-            : isSelected
-            ? "bg-accent/60"
-            : "text-foreground hover:bg-muted",
-          "font-medium"
+          "group relative flex items-center gap-1 rounded-md py-1 pr-1 text-sm cursor-pointer transition-colors font-medium",
+          isSelected ? "bg-accent/60" : "text-foreground hover:bg-muted",
+          // Subtle highlight when another item is being dragged over.
+          // Not a "drop indicator" — just a "yes, you're aimed here" cue.
+          isDifferentItem && "bg-primary/5 ring-1 ring-primary/30 ring-inset",
+          isDragging && "opacity-30"
         )}
-        style={{ paddingLeft: `${depth * 12 + 4}px` }}
         role="treeitem"
         aria-expanded={isExpanded}
       >
+        {/* Drag handle */}
+        <button
+          ref={setActivatorNodeRef}
+          {...listeners}
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "flex h-5 w-3 items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing",
+            "opacity-0 group-hover:opacity-100 transition-opacity",
+            isRenaming && "pointer-events-none opacity-0"
+          )}
+          aria-label="Drag to reorder"
+          tabIndex={-1}
+        >
+          <GripVertical className="h-3 w-3 text-muted-foreground" />
+        </button>
+
         {/* Chevron */}
         <button
           type="button"
@@ -366,7 +366,6 @@ export function SectionNode(props: SectionNodeProps) {
       {/* Children */}
       {isExpanded && (
         <div role="group">
-          {/* Child sections (recurse) */}
           {childSections.map((child) => (
             <SectionNode
               key={child.id}
@@ -376,7 +375,6 @@ export function SectionNode(props: SectionNodeProps) {
             />
           ))}
 
-          {/* Child pages */}
           {childPages.map((page) => (
             <PageListItem
               key={page.id}
@@ -395,7 +393,6 @@ export function SectionNode(props: SectionNodeProps) {
             />
           ))}
 
-          {/* Empty placeholder */}
           {!hasChildren && (
             <div
               className="text-xs text-muted-foreground/60 italic py-1"
@@ -490,9 +487,6 @@ export function SectionNode(props: SectionNodeProps) {
 // Helpers
 // ============================================================
 
-/**
- * Count all pages inside a section and its descendants.
- */
 function countDescendantPages(
   sectionId: string,
   allSections: NotebookSection[],

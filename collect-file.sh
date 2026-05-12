@@ -225,6 +225,10 @@ collect_file "$SRC/lib/notebook/storage/tags.ts"
 collect_file "$SRC/lib/notebook/storage/backup.ts"
 
 # ================================================
+section "🖱️" "LIB - NOTEBOOK / DND"
+collect_file "$SRC/lib/notebook/dnd/drop-resolver.ts"
+
+# ================================================
 section "🔩" "LIB - NOTEBOOK / UTILS"
 collect_file "$SRC/lib/notebook/utils/filename-utils.ts"
 collect_file "$SRC/lib/notebook/utils/frontmatter.ts"
@@ -294,6 +298,9 @@ collect_file "$SRC/components/features/notebook/file-manager/page-list-item.tsx"
 collect_file "$SRC/components/features/notebook/file-manager/page-card.tsx"
 collect_file "$SRC/components/features/notebook/file-manager/search-bar.tsx"
 collect_file "$SRC/components/features/notebook/file-manager/new-item-menu.tsx"
+collect_file "$SRC/components/features/notebook/file-manager/dnd-context.tsx"
+collect_file "$SRC/components/features/notebook/file-manager/drag-overlay-card.tsx"
+collect_file "$SRC/components/features/notebook/file-manager/drop-indicator.tsx"
 
 # ================================================
 section "✍️" "COMPONENTS — Editor"
@@ -310,6 +317,8 @@ collect_file "$SRC/components/features/notebook/import/import-zip-button.tsx"
 collect_file "$SRC/components/features/notebook/import/import-preview-modal.tsx"
 collect_file "$SRC/components/features/notebook/import/import-md-handler.tsx"
 collect_file "$SRC/components/features/notebook/import/import-progress.tsx"
+collect_file "$SRC/components/features/notebook/import/md-notebook-modal.tsx"
+collect_file "$SRC/components/features/notebook/import/unified-dropzone.tsx"
 
 # ================================================
 section "💾" "COMPONENTS — Export"
@@ -346,7 +355,7 @@ collect_file "$SRC/components/features/public-docs/content/index.ts"
 collect_file "$SRC/components/features/public-docs/content/markdown-renderer.tsx"
 collect_file "$SRC/components/features/public-docs/content/breadcrumbs.tsx"
 collect_file "$SRC/components/features/public-docs/content/callout.tsx"
-collect_file "$SRC/components/features/public-docs/content/code-block.tsx"
+collect_file "$SRC/components/features/public-docs/content/code-block-enhancer.tsx"
 collect_file "$SRC/components/features/public-docs/content/page-nav-footer.tsx"
 collect_file "$SRC/components/features/public-docs/right-toc/index.ts"
 collect_file "$SRC/components/features/public-docs/right-toc/on-page-toc.tsx"

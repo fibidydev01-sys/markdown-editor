@@ -1,28 +1,22 @@
 "use client";
 
 /**
- * Notebook sidebar — left panel inside `/notebooks/[id]`.
+ * Notebook sidebar — Notion-style EAGER SWAP edition.
  *
- * Layout:
- *   ┌──────────────────────────────┐
- *   │  Header (notebook name + +)  │
- *   ├──────────────────────────────┤
- *   │  Search bar                  │
- *   ├──────────────────────────────┤
- *   │  Tree (sections + pages)     │
- *   │  - Root-level drop zone      │
- *   ├──────────────────────────────┤
- *   │  Multi-select toolbar        │
- *   │  (only when selection active)│
- *   └──────────────────────────────┘
+ * ──────────────────────────────────────────────────────────────────
+ * WHAT CHANGED (Stage 2 polish):
+ * ──────────────────────────────────────────────────────────────────
+ * - Removed `onUpdatePages` / `onUpdateSections` props (old commit
+ *   pattern from drag-end).
+ * - Added `onLiveSwap` / `onCommit` / `onCancel` props (new eager
+ *   swap pattern).
+ * - Manages a local "expandRequest" state so the dnd-context can
+ *   trigger auto-expand-on-hover for section nesting.
  *
- * Resize:
- *   - Drag right edge to resize (desktop only)
- *   - Width persisted via NotebookSettings
- *
- * Mobile:
- *   - Rendered inside a Sheet from parent
- *   - Resize handle hidden
+ * The sidebar itself doesn't own the optimistic state — it just
+ * renders whatever pages/sections the parent passes in. The parent
+ * (notebook detail page) owns both the source-of-truth state AND
+ * the optimistic-during-drag state.
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -33,6 +27,11 @@ import {
   FolderInput,
   X,
 } from "lucide-react";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { useDroppable } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -64,19 +63,22 @@ import { SearchBar } from "./search-bar";
 import { NewItemMenu } from "./new-item-menu";
 import { SectionNode } from "./section-node";
 import { PageListItem } from "./page-list-item";
+import { NotebookDndContext, useDndState } from "./dnd-context";
+
+// ============================================================
+// Props
+// ============================================================
 
 interface NotebookSidebarProps {
   notebook: Notebook;
-  sections: NotebookSection[];
+  /** Pages — already optimistic-merged by parent. */
   pages: NotebookPage[];
-  /** Active page id (sync with URL). */
+  /** Sections — already optimistic-merged by parent. */
+  sections: NotebookSection[];
   activePageId: string | null;
-  /** Sidebar width (px). Owner: page component. */
   width: number;
-  /** Called on resize commit. */
   onWidthChange: (width: number) => void;
 
-  /** Action callbacks — owned by parent (page). */
   onSelectPage: (pageId: string) => void;
   onCreatePage: (sectionId: string | null) => void | Promise<void>;
   onCreateSection: (parentId: string | null) => void | Promise<void>;
@@ -95,9 +97,36 @@ interface NotebookSidebarProps {
   ) => void | Promise<void>;
   onDeletePages: (pageIds: string[]) => void | Promise<void>;
 
-  /** Mobile mode — hide resize handle. */
+  /**
+   * NEW — DnD eager swap callbacks (replaces onUpdatePages/onUpdateSections).
+   */
+  onLiveSwap: (next: {
+    pages: NotebookPage[];
+    sections: NotebookSection[];
+  }) => void;
+  onCommit: (updates: {
+    pageUpdates: Array<{
+      id: string;
+      order: number;
+      sectionId: string | null;
+    }>;
+    sectionUpdates: Array<{
+      id: string;
+      order: number;
+      parentId: string | null;
+    }>;
+  }) => void | Promise<void>;
+  onCancel: (snapshot: {
+    pages: NotebookPage[];
+    sections: NotebookSection[];
+  }) => void;
+
   isMobile?: boolean;
 }
+
+// ============================================================
+// Main component
+// ============================================================
 
 export function NotebookSidebar(props: NotebookSidebarProps) {
   const {
@@ -118,10 +147,13 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
     onDeleteSection,
     onMovePages,
     onDeletePages,
+    onLiveSwap,
+    onCommit,
+    onCancel,
     isMobile,
   } = props;
 
-  // Selection state from store
+  // ── Selection state ──
   const selectedPageIds = useNotebookStore((s) => s.selectedPageIds);
   const selectedSectionIds = useNotebookStore((s) => s.selectedSectionIds);
   const togglePageSelection = useNotebookStore((s) => s.togglePageSelection);
@@ -130,19 +162,17 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
 
   const selectionActive = selectedPageIds.length > 0;
 
-  // Search
+  // ── Search + bulk delete ──
   const [search, setSearch] = useState("");
-
-  // Bulk delete dialog
   const [showBulkDelete, setShowBulkDelete] = useState(false);
-
-  // Root-level drop zone state
-  const [rootDragOver, setRootDragOver] = useState(false);
 
   // ── Last-selected ref for shift-click range select ──
   const lastSelectedIdRef = useRef<string | null>(null);
 
-  // ── Tree data (root level) ─────────────────────────
+  // ── Auto-expand request (triggered by dnd-context on long hover) ──
+  const [expandRequest, setExpandRequest] = useState<string | null>(null);
+
+  // ── Derived tree data ──
   const rootSections = useMemo(
     () =>
       sections
@@ -159,7 +189,7 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
     [pages]
   );
 
-  // ── Filtered pages for search ──────────────────────
+  // Filtered for search
   const filteredPages = useMemo(() => {
     if (!search.trim()) return null;
     const q = search.toLowerCase();
@@ -170,12 +200,30 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
     );
   }, [pages, search]);
 
-  // ── Page click — handles select vs open ─────────────
+  // Full flat ID list for SortableContext (document order)
+  const sortableIds = useMemo(() => {
+    const ids: string[] = [];
+    function walk(parentSecId: string | null) {
+      const secs = sections
+        .filter((s) => s.parentId === parentSecId)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      for (const sec of secs) {
+        ids.push(sec.id);
+        walk(sec.id);
+      }
+      const pgs = pages
+        .filter((p) => p.sectionId === parentSecId)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      for (const p of pgs) ids.push(p.id);
+    }
+    walk(null);
+    return ids;
+  }, [sections, pages]);
+
+  // ── Page click handler ──
   const handlePageClick = useCallback(
     (page: NotebookPage, event: React.MouseEvent) => {
-      // Shift/Cmd/Ctrl click → toggle multi-select
       if (event.shiftKey && lastSelectedIdRef.current) {
-        // Shift-click → range select
         const pageIds = pages.map((p) => p.id);
         const lastIdx = pageIds.indexOf(lastSelectedIdRef.current);
         const currentIdx = pageIds.indexOf(page.id);
@@ -197,14 +245,12 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
         return;
       }
 
-      // Plain click while selection active → toggle
       if (selectionActive) {
         togglePageSelection(page.id);
         lastSelectedIdRef.current = page.id;
         return;
       }
 
-      // Plain click → open page
       lastSelectedIdRef.current = page.id;
       onSelectPage(page.id);
     },
@@ -219,57 +265,14 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
   );
 
   const handleToggleSelect = useCallback(
-    (id: string, _event: React.MouseEvent) => {
+    (id: string) => {
       togglePageSelection(id);
       lastSelectedIdRef.current = id;
     },
     [togglePageSelection]
   );
 
-  // ── Drop handler for root-level drop zone ───────────
-  const handleRootDragOver = (e: React.DragEvent) => {
-    const types = e.dataTransfer.types;
-    if (
-      types.includes("application/notebook-page-id") ||
-      types.includes("application/notebook-page-ids")
-    ) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setRootDragOver(true);
-    }
-  };
-
-  const handleRootDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setRootDragOver(false);
-
-    const idsJson = e.dataTransfer.getData("application/notebook-page-ids");
-    if (idsJson) {
-      try {
-        const ids = JSON.parse(idsJson) as string[];
-        if (ids.length > 0) onMovePages(ids, null);
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-
-    const id = e.dataTransfer.getData("application/notebook-page-id");
-    if (id) onMovePage(id, null);
-  };
-
-  // ── Drop handler for section nodes ──────────────────
-  const handleDropPagesIntoSection = useCallback(
-    (pageIds: string[], sectionId: string | null) => {
-      if (pageIds.length === 1) {
-        return onMovePage(pageIds[0], sectionId);
-      }
-      return onMovePages(pageIds, sectionId);
-    },
-    [onMovePage, onMovePages]
-  );
-
-  // ── Resize handle ────────────────────────────────────
+  // ── Resize handle ──
   const handleResizeMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (isMobile) return;
@@ -305,8 +308,7 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
     [isMobile, width, onWidthChange]
   );
 
-  // ── Render ───────────────────────────────────────────
-
+  // ── Render ──
   return (
     <>
       <aside
@@ -354,14 +356,12 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
         <div
           className="flex-1 overflow-y-auto p-2"
           onClick={(e) => {
-            // Click on empty background clears selection
             if (e.target === e.currentTarget && selectionActive) {
               clearPageSelection();
             }
           }}
         >
           {filteredPages ? (
-            // ─── Search results view ───
             <SearchResultsView
               pages={filteredPages}
               sections={sections}
@@ -377,80 +377,79 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
               onDelete={onDeletePage}
             />
           ) : (
-            // ─── Tree view ───
-            <>
-              {/* Empty state */}
-              {rootSections.length === 0 && rootPages.length === 0 && (
-                <EmptyTreeState
-                  onCreatePage={() => onCreatePage(null)}
-                  onCreateSection={() => onCreateSection(null)}
-                />
-              )}
+            // Tree view — wrapped in DnD context + sortable
+            <NotebookDndContext
+              pages={pages}
+              sections={sections}
+              selectedPageIds={selectedPageIds}
+              onLiveSwap={onLiveSwap}
+              onCommit={onCommit}
+              onCancel={onCancel}
+              onRequestExpand={setExpandRequest}
+            >
+              <SortableContext
+                items={sortableIds}
+                strategy={verticalListSortingStrategy}
+              >
+                {/* Empty state */}
+                {rootSections.length === 0 && rootPages.length === 0 && (
+                  <EmptyTreeState
+                    onCreatePage={() => onCreatePage(null)}
+                    onCreateSection={() => onCreateSection(null)}
+                  />
+                )}
 
-              {/* Root sections (recursive) */}
-              {rootSections.map((sec) => (
-                <SectionNode
-                  key={sec.id}
-                  section={sec}
-                  allSections={sections}
-                  allPages={pages}
-                  activePageId={activePageId}
-                  selectedPageIds={selectedPageIds}
-                  selectedSectionIds={selectedSectionIds}
-                  selectionActive={selectionActive}
-                  depth={0}
-                  onSelectPage={handlePageClick}
-                  onTogglePageSelect={handleToggleSelect}
-                  onRenamePage={onRenamePage}
-                  onDuplicatePage={onDuplicatePage}
-                  onMovePage={onMovePage}
-                  onDeletePage={onDeletePage}
-                  onRenameSection={onRenameSection}
-                  onDeleteSection={onDeleteSection}
-                  onCreatePage={onCreatePage}
-                  onCreateSection={onCreateSection}
-                  onDropPagesIntoSection={handleDropPagesIntoSection}
-                />
-              ))}
+                {/* Root sections */}
+                {rootSections.map((sec) => (
+                  <SectionNode
+                    key={sec.id}
+                    section={sec}
+                    allSections={sections}
+                    allPages={pages}
+                    activePageId={activePageId}
+                    selectedPageIds={selectedPageIds}
+                    selectedSectionIds={selectedSectionIds}
+                    selectionActive={selectionActive}
+                    depth={0}
+                    expandRequest={expandRequest}
+                    onSelectPage={handlePageClick}
+                    onTogglePageSelect={handleToggleSelect}
+                    onRenamePage={onRenamePage}
+                    onDuplicatePage={onDuplicatePage}
+                    onMovePage={onMovePage}
+                    onDeletePage={onDeletePage}
+                    onRenameSection={onRenameSection}
+                    onDeleteSection={onDeleteSection}
+                    onCreatePage={onCreatePage}
+                    onCreateSection={onCreateSection}
+                  />
+                ))}
 
-              {/* Root pages */}
-              {rootPages.map((page) => (
-                <PageListItem
-                  key={page.id}
-                  page={page}
-                  sections={sections}
-                  isActive={page.id === activePageId}
-                  isSelected={selectedPageIds.includes(page.id)}
-                  selectionActive={selectionActive}
-                  depth={0}
-                  onClick={handlePageClick}
-                  onToggleSelect={handleToggleSelect}
-                  onRename={onRenamePage}
-                  onDuplicate={onDuplicatePage}
-                  onMove={onMovePage}
-                  onDelete={onDeletePage}
-                />
-              ))}
+                {/* Root pages */}
+                {rootPages.map((page) => (
+                  <PageListItem
+                    key={page.id}
+                    page={page}
+                    sections={sections}
+                    isActive={page.id === activePageId}
+                    isSelected={selectedPageIds.includes(page.id)}
+                    selectionActive={selectionActive}
+                    depth={0}
+                    onClick={handlePageClick}
+                    onToggleSelect={handleToggleSelect}
+                    onRename={onRenamePage}
+                    onDuplicate={onDuplicatePage}
+                    onMove={onMovePage}
+                    onDelete={onDeletePage}
+                  />
+                ))}
 
-              {/* Root drop zone — only when sections exist (else click empty bg) */}
-              {(rootSections.length > 0 || rootPages.length > 0) && (
-                <div
-                  onDragOver={handleRootDragOver}
-                  onDragLeave={() => setRootDragOver(false)}
-                  onDrop={handleRootDrop}
-                  className={cn(
-                    "mt-2 rounded-md border-2 border-dashed py-3 text-center text-xs transition-colors",
-                    rootDragOver
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-transparent text-muted-foreground/0 hover:border-muted-foreground/20 hover:text-muted-foreground/60"
-                  )}
-                >
-                  {rootDragOver
-                    ? "Drop to move to root"
-                    : "Drag pages here for root level"}
-                </div>
-              )}
-            </>
+                {/* Root drop zone — appears when dragging */}
+                <RootDroppable
+                  hasContent={rootSections.length > 0 || rootPages.length > 0}
+                />
+              </SortableContext>
+            </NotebookDndContext>
           )}
         </div>
 
@@ -473,7 +472,6 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
             </div>
 
             <div className="flex items-center gap-1">
-              {/* Move dropdown */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" className="h-7">
@@ -516,7 +514,6 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Delete */}
               <Button
                 variant="ghost"
                 size="sm"
@@ -530,7 +527,7 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
           </div>
         )}
 
-        {/* Resize handle (desktop only) */}
+        {/* Resize handle */}
         {!isMobile && (
           <div
             onMouseDown={handleResizeMouseDown}
@@ -571,6 +568,34 @@ export function NotebookSidebar(props: NotebookSidebarProps) {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+// ============================================================
+// Root droppable — invisible zone at bottom of tree
+// ============================================================
+
+function RootDroppable({ hasContent }: { hasContent: boolean }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: "root",
+    data: { kind: "root" },
+  });
+  const { activeItem } = useDndState();
+
+  if (!activeItem) return null;
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "mt-2 rounded-md border-2 border-dashed py-3 text-center text-xs transition-colors",
+        isOver
+          ? "border-primary bg-primary/10 text-primary"
+          : "border-muted-foreground/20 text-muted-foreground/60"
+      )}
+    >
+      {isOver ? "Drop here to move to root" : "or drop at root level"}
+    </div>
   );
 }
 
@@ -627,7 +652,7 @@ function SearchResultsView({
   selectionActive: boolean;
   search: string;
   onPageClick: (page: NotebookPage, event: React.MouseEvent) => void;
-  onToggleSelect: (id: string, event: React.MouseEvent) => void;
+  onToggleSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void | Promise<void>;
   onDuplicate: (id: string) => void | Promise<void>;
   onMove: (id: string, sectionId: string | null) => void | Promise<void>;
