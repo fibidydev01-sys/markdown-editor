@@ -1,4 +1,4 @@
-# E-Raport PKBM — Boilerplate
+# BOILERPLATE
 
 > Boilerplate production-ready untuk sistem E-Raport PKBM berbasis Next.js 15 + Supabase.
 > Battle-tested. Auth, RLS, middleware, seed — semua sudah dikerjakan.
