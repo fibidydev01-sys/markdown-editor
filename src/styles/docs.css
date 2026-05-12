@@ -1,0 +1,406 @@
+/**
+ * Public docs prose styles.
+ *
+ * Scoped to `.docs-prose` so it never leaks into the dashboard.
+ * Imported once from src/app/layout.tsx (or the public docs layout).
+ *
+ * Includes:
+ *   - Typography (headings, paragraphs, lists, blockquotes)
+ *   - Tables (GFM)
+ *   - Inline code + code blocks (Shiki-friendly tweaks)
+ *   - Callouts (tip/info/warning/danger/note/caution)
+ *   - Auto-link headings (# icon on hover)
+ *   - Anchor scroll offset (for sticky header)
+ */
+
+/* ============================================================
+   Base typography
+   ============================================================ */
+
+.docs-prose {
+  color: var(--foreground);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.docs-prose > * + * {
+  margin-top: 1em;
+}
+
+/* Headings */
+.docs-prose h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
+.docs-prose h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  scroll-margin-top: 5rem; /* sticky header offset */
+}
+
+.docs-prose h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 1.75rem;
+  margin-bottom: 0.5rem;
+  scroll-margin-top: 5rem;
+}
+
+.docs-prose h4,
+.docs-prose h5,
+.docs-prose h6 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  scroll-margin-top: 5rem;
+}
+
+/* Auto-link headings — rehype-autolink-headings adds <a> wrapping the heading text */
+.docs-prose h2 > a,
+.docs-prose h3 > a,
+.docs-prose h4 > a {
+  color: inherit;
+  text-decoration: none;
+  position: relative;
+}
+
+.docs-prose h2 > a::before,
+.docs-prose h3 > a::before,
+.docs-prose h4 > a::before {
+  content: "#";
+  position: absolute;
+  left: -1.25em;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 150ms;
+  font-weight: 400;
+}
+
+.docs-prose h2:hover > a::before,
+.docs-prose h3:hover > a::before,
+.docs-prose h4:hover > a::before {
+  opacity: 0.5;
+}
+
+/* Paragraphs */
+.docs-prose p {
+  margin: 0;
+}
+
+/* Links */
+.docs-prose a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  transition: text-decoration-color 150ms;
+}
+
+.docs-prose a:hover {
+  text-decoration-color: var(--primary);
+}
+
+/* Lists */
+.docs-prose ul,
+.docs-prose ol {
+  padding-left: 1.5rem;
+}
+
+.docs-prose ul {
+  list-style-type: disc;
+}
+
+.docs-prose ol {
+  list-style-type: decimal;
+}
+
+.docs-prose li {
+  margin-top: 0.25rem;
+}
+
+.docs-prose li > ul,
+.docs-prose li > ol {
+  margin-top: 0.25rem;
+}
+
+/* Task lists (GFM) */
+.docs-prose li.task-list-item,
+.docs-prose ul.contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.docs-prose .task-list-item input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+
+/* Blockquote */
+.docs-prose blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1rem;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+/* Horizontal rule */
+.docs-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+/* Strong & em */
+.docs-prose strong {
+  font-weight: 600;
+}
+
+.docs-prose em {
+  font-style: italic;
+}
+
+/* ============================================================
+   Tables (GFM)
+   ============================================================ */
+
+.docs-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.docs-prose thead {
+  border-bottom: 2px solid var(--border);
+}
+
+.docs-prose th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+}
+
+.docs-prose td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.docs-prose tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ============================================================
+   Inline code
+   ============================================================ */
+
+.docs-prose code:not(pre code) {
+  background: var(--muted);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  border: 1px solid var(--border);
+}
+
+/* ============================================================
+   Code blocks (rehype-pretty-code / Shiki)
+   ============================================================ */
+
+.docs-prose pre {
+  background: #0d1117 !important; /* github-dark bg */
+  color: #e6edf3;
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.875em;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  position: relative;
+}
+
+.docs-prose pre code {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+}
+
+/* rehype-pretty-code line numbers */
+.docs-prose pre [data-line] {
+  padding: 0 1.25rem;
+  margin: 0 -1.25rem;
+}
+
+.docs-prose pre [data-highlighted-line] {
+  background: rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--primary);
+}
+
+/* Filename label (e.g. ```ts title="foo.ts") */
+.docs-prose figure[data-rehype-pretty-code-figure] {
+  margin: 0;
+}
+
+.docs-prose figcaption[data-rehype-pretty-code-title] {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.5rem 0.5rem 0 0;
+  font-size: 0.75rem;
+  font-family: ui-monospace, monospace;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.docs-prose figcaption[data-rehype-pretty-code-title] + pre {
+  border-radius: 0 0 0.5rem 0.5rem;
+  margin-top: 0;
+}
+
+/* ============================================================
+   Code block copy button (Phase Fix — client-injected)
+   ============================================================ */
+ 
+.docs-prose .docs-code-wrapper {
+  position: relative;
+}
+ 
+.docs-prose .docs-code-copy {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms, background-color 150ms, color 150ms;
+}
+ 
+.docs-prose .docs-code-wrapper:hover .docs-code-copy,
+.docs-prose .docs-code-copy:focus-visible {
+  opacity: 1;
+}
+ 
+.docs-prose .docs-code-copy:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 1);
+}
+ 
+.docs-prose .docs-code-copy:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 2px;
+}
+ 
+.docs-prose .docs-code-copy[data-copied="true"] {
+  color: rgb(34 197 94); /* green-500 */
+}
+
+/* ============================================================
+   Callouts
+   ============================================================ */
+
+.docs-prose .callout {
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  border-left: 4px solid;
+  position: relative;
+}
+
+.docs-prose .callout > *:first-child {
+  margin-top: 0;
+}
+
+.docs-prose .callout > *:last-child {
+  margin-bottom: 0;
+}
+
+.docs-prose .callout-tip {
+  background: rgb(34 197 94 / 0.08);
+  border-color: rgb(34 197 94);
+  color: var(--foreground);
+}
+
+.docs-prose .callout-info,
+.docs-prose .callout-note {
+  background: rgb(59 130 246 / 0.08);
+  border-color: rgb(59 130 246);
+  color: var(--foreground);
+}
+
+.docs-prose .callout-warning,
+.docs-prose .callout-caution {
+  background: rgb(245 158 11 / 0.08);
+  border-color: rgb(245 158 11);
+  color: var(--foreground);
+}
+
+.docs-prose .callout-danger {
+  background: rgb(239 68 68 / 0.08);
+  border-color: rgb(239 68 68);
+  color: var(--foreground);
+}
+
+/* Callout title (if specified via :::tip Title) */
+.docs-prose .callout-title {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ============================================================
+   Images
+   ============================================================ */
+
+.docs-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+}
+
+/* ============================================================
+   Mobile tweaks
+   ============================================================ */
+
+@media (max-width: 640px) {
+  .docs-prose {
+    font-size: 14px;
+  }
+
+  .docs-prose h1 {
+    font-size: 1.625rem;
+  }
+
+  .docs-prose h2 {
+    font-size: 1.25rem;
+  }
+
+  .docs-prose h3 {
+    font-size: 1.05rem;
+  }
+
+  .docs-prose pre {
+    padding: 0.875rem 1rem;
+    font-size: 0.8em;
+  }
+}
